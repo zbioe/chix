@@ -39,6 +39,19 @@ def get(url, accept="application/json", data=None, token=None):
         return r.read().decode()
 
 
+def post_json(url, payload, token):
+    headers = {
+        "User-Agent": AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(url, body, headers, method="POST")
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read().decode())
+
+
 def get_json(url, **kw):
     return json.loads(get(url, **kw))
 
