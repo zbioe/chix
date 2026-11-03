@@ -1,7 +1,8 @@
 # Chess from the terminal, the GUIs and Emacs: chess-tui (play Lichess or an
 # engine), chess-explore (an opening's whole tree), chess-review (Lichess and
-# chess.com games annotated by an engine), chess-puzzle and chess-sync (every
-# game of a user, as a database). The engines come with the host
+# chess.com games judged as Lichess does), chess-train (your mistakes, to
+# find again), chess-puzzle and chess-sync (every game of a user, as a
+# database). The engines come with the host
 # (pkgs/chess-engines) and are added to En Croissant and ChessX; Emacs'
 # packages are zmacs' (lisp/chess.el)
 {
@@ -159,6 +160,7 @@ in
           (tool "chess-review" "review.py")
           (tool "chess-puzzle" "puzzle.py")
           (tool "chess-sync" "sync.py")
+          (tool "chess-train" "train.py")
         ];
 
         # added once: what you change or remove there afterwards is kept,
@@ -178,6 +180,9 @@ in
             chess-puzzle =
               entry "Chess Puzzle" "The Lichess daily puzzle in the terminal"
                 "${terminal} chess-puzzle";
+            chess-train =
+              entry "Chess Training" "Find again the moves you missed in your games"
+                "${terminal} chess-train";
           })
           # chess.com has no API to play: its site in a window of its own
           (lib.mkIf (osConfig.dotnix.desktop.browsers.default != null) {
