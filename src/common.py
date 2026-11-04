@@ -1,8 +1,10 @@
-# What the chess tools share: the board in the terminal, the engines
-# (CHESS_ENGINES, from pkgs/chess-engines) and the HTTP calls
+# What the chess tools share: the engines (CHESS_ENGINES, from
+# pkgs/chess-engines), the HTTP calls and the Lichess opening explorer
 import json
 import os
 import subprocess
+import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -11,13 +13,9 @@ import chess
 import chess.engine
 
 AGENT = "dotnix-chess"
+EXPLORER = "https://explorer.lichess.ovh"
 ENGINES = json.loads(Path(os.environ["CHESS_ENGINES"]).read_text())
 CHESS_DIR = Path(os.environ["CHESS_DIR"])
-
-GLYPHS = dict(zip("kqrbnp", "♚♛♜♝♞♟"))
-LIGHT, DARK = (240, 217, 181), (181, 136, 99)
-LIGHT_LAST, DARK_LAST = (205, 210, 106), (170, 162, 58)
-
 
 def lichess_token():
     path = os.environ.get("LICHESS_TOKEN_FILE")
@@ -56,41 +54,6 @@ def get_json(url, **kw):
     return json.loads(get(url, **kw))
 
 
-def color(rgb, text):
-    r, g, b = rgb
-    return f"\033[38;2;{r};{g};{b}m{text}\033[0m"
-
-
-def draw(board, flipped=False):
-    last = board.peek() if board.move_stack else None
-    marked = {last.from_square, last.to_square} if last else set()
-    ranks = range(8) if flipped else range(7, -1, -1)
-    files = range(7, -1, -1) if flipped else range(8)
-    rows = []
-    for rank in ranks:
-        row = f" {rank + 1} "
-        for file in files:
-            sq = chess.square(file, rank)
-            light = (file + rank) % 2 == 1
-            if sq in marked:
-                r, g, b = LIGHT_LAST if light else DARK_LAST
-            else:
-                r, g, b = LIGHT if light else DARK
-            piece = board.piece_at(sq)
-            cell = " "
-            if piece:
-                fg = "\033[1;97m" if piece.color else "\033[1;30m"
-                cell = f"{fg}{GLYPHS[piece.symbol().lower()]}"
-            row += f"\033[48;2;{r};{g};{b}m {cell} \033[0m"
-        rows.append(row)
-    rows.append("    " + "  ".join("abcdefgh"[f] for f in files))
-    return "\n".join(rows)
-
-
-def clear():
-    print("\033[2J\033[H", end="")
-
-
 def line_san(board, moves, limit=8):
     b = board.copy()
     out = []
@@ -122,6 +85,8 @@ class Engine:
         cores = os.cpu_count() or 2
         options = {"Threads": max(1, cores // 2), "Hash": 512}
         self.uci.configure({k: v for k, v in options.items() if k in self.uci.options})
+        # the screens ask from worker threads: one search at a time
+        self.lock = threading.Lock()
 
     def limit(self):
         if is_maia(self.name):
@@ -129,7 +94,72 @@ class Engine:
         return chess.engine.Limit(time=self.seconds)
 
     def analyse(self, board, multipv=None):
-        return self.uci.analyse(board, self.limit(), multipv=multipv)
+        with self.lock:
+            return self.uci.analyse(board, self.limit(), multipv=multipv)
 
     def quit(self):
         self.uci.quit()
+
+
+def open_url(url):
+    subprocess.Popen(
+        ["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+
+def score_text(score):
+    s = score.white()
+    if s.is_mate():
+        return f"#{s.mate()}"
+    return f"{s.score() / 100:+.2f}"
+
+
+class ExplorerError(Exception):
+    pass
+
+
+class Explorer:
+    """The moves played from a position: Lichess' games of some ratings,
+    the masters' or a player's (as a color)."""
+
+    def __init__(self, db="lichess", ratings="1600,1800,2000,2200,2500",
+                 speeds="blitz,rapid,classical", player=None, color="white"):
+        self.db = db
+        self.ratings = ratings
+        self.speeds = speeds
+        self.player = player
+        self.color = color
+        self.cache = {}
+
+    def describe(self):
+        if self.db == "player":
+            return f"{self.player}'s games as {self.color}"
+        if self.db == "lichess":
+            return f"Lichess {self.speeds.replace(',', ' ')}, rated {self.ratings.replace(',', ' ')}"
+        return "masters"
+
+    def query(self, board, moves=15):
+        token = lichess_token()
+        if not token:
+            raise ExplorerError(
+                "the explorer needs the Lichess token: dotnix.games.chess.lichess.enable"
+            )
+        params = {"fen": board.fen(), "moves": moves, "topGames": 0, "recentGames": 0}
+        if self.db == "lichess":
+            params |= {"speeds": self.speeds, "ratings": self.ratings}
+        elif self.db == "player":
+            params |= {"player": self.player, "color": self.color}
+        key = (self.db, self.ratings, self.player, self.color, board.fen(), moves)
+        if key not in self.cache:
+            url = f"{EXPLORER}/{self.db}?{urllib.parse.urlencode(params)}"
+            try:
+                lines = get(url, token=token).strip().splitlines()
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    raise ExplorerError("Lichess asks to wait a minute (429)") from e
+                raise ExplorerError(f"explorer: HTTP {e.code}") from e
+            except urllib.error.URLError as e:
+                raise ExplorerError(f"explorer: {e.reason}") from e
+            # the player database streams updates: the last one is complete
+            self.cache[key] = json.loads(lines[-1])
+        return self.cache[key]

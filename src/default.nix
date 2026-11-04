@@ -1,8 +1,8 @@
-# Chess from the terminal, the GUIs and Emacs: chess-tui (play Lichess or an
-# engine), chess-explore (an opening's whole tree), chess-review (Lichess and
-# chess.com games judged as Lichess does), chess-train (your mistakes, to
-# find again), chess-puzzle and chess-sync (every game of a user, as a
-# database). The engines come with the host
+# Chess from the terminal, the GUIs and Emacs. `chess` is an app with the
+# mouse: openings learned by name, line by line; your games (Lichess and
+# chess.com) reviewed as Lichess does; your mistakes and puzzles to train;
+# the explorer. chess-tui plays Lichess or an engine; chess-review and
+# chess-sync work from the shell. The engines come with the host
 # (pkgs/chess-engines) and are added to En Croissant and ChessX; Emacs'
 # packages are zmacs' (lisp/chess.el)
 {
@@ -10,6 +10,7 @@
   lib,
   pkgs,
   osConfig,
+  chess-openings,
   ...
 }:
 let
@@ -76,8 +77,17 @@ let
       }
     ) engines.maia;
 
-  python = pkgs.python3.withPackages (p: [ p.chess ]);
+  python = pkgs.python3.withPackages (p: [
+    p.chess
+    p.textual
+  ]);
 
+  users = lib.concatStringsSep " " (
+    lib.optional (cfg.lichess.user != null) "lichess:${cfg.lichess.user}"
+    ++ lib.optional (cfg.chesscom.user != null) "chesscom:${cfg.chesscom.user}"
+  );
+
+  # tool NAME "SCRIPT [ARGS]"
   tool =
     name: script:
     pkgs.writeShellApplication {
@@ -85,6 +95,9 @@ let
       runtimeInputs = [ pkgs.xdg-utils ];
       text = ''
         export CHESS_ENGINES=${pkgs.writeText "chess-engines.json" (builtins.toJSON commands)}
+        export CHESS_OPENINGS=${chess-openings}
+        export CHESS_USERS="${users}"
+        export CHESS_TUI=${lib.getExe tui}
         export CHESS_DIR="$HOME/chess"
         ${lib.optionalString cfg.lichess.enable "export LICHESS_TOKEN_FILE=${token}"}
         exec ${python}/bin/python3 ${./.}/${script} "$@"
@@ -148,7 +161,17 @@ in
     };
     lichess.enable = lib.mkEnableOption ''
       the Lichess token, `lichess-token` in secrets/chess.yaml: playing from
-      chess-tui and Emacs, the opening explorer of chess-explore'';
+      chess-tui and Emacs, the opening explorer, puzzles on your account'';
+    lichess.user = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Your Lichess user: your games in `chess`.";
+    };
+    chesscom.user = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Your chess.com user: your games in `chess`.";
+    };
   };
 
   config = lib.mkIf cfg.enable (
@@ -156,11 +179,15 @@ in
       {
         home.packages = [
           tui
-          (tool "chess-explore" "explore.py")
+          (tool "chess" "app.py")
+          # its screens, straight
+          (tool "chess-openings" "app.py openings")
+          (tool "chess-games" "app.py games")
+          (tool "chess-train" "app.py train")
+          (tool "chess-puzzle" "app.py puzzle")
+          (tool "chess-explore" "app.py explore")
           (tool "chess-review" "review.py")
-          (tool "chess-puzzle" "puzzle.py")
           (tool "chess-sync" "sync.py")
-          (tool "chess-train" "train.py")
         ];
 
         # added once: what you change or remove there afterwards is kept,
@@ -171,18 +198,13 @@ in
 
         xdg.desktopEntries = lib.mkMerge [
           (lib.mkIf (config.dotnix.desktop.terminals.default != null) {
+            chess = entry "Chess" "Openings, your games reviewed, training and puzzles" "${terminal} chess";
+            chess-openings =
+              entry "Chess Openings" "Learn an opening by its name, every variation"
+                "${terminal} chess-openings";
             chess-tui =
               entry "Chess (terminal)" "Play Lichess or an engine in the terminal"
                 "${terminal} chess-tui";
-            chess-explore =
-              entry "Chess Openings" "Every move played from a position, with an engine"
-                "${terminal} chess-explore";
-            chess-puzzle =
-              entry "Chess Puzzle" "The Lichess daily puzzle in the terminal"
-                "${terminal} chess-puzzle";
-            chess-train =
-              entry "Chess Training" "Find again the moves you missed in your games"
-                "${terminal} chess-train";
           })
           # chess.com has no API to play: its site in a window of its own
           (lib.mkIf (osConfig.dotnix.desktop.browsers.default != null) {

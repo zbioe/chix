@@ -49,8 +49,9 @@ def cp_of(score):
 def describe(cp, score=None):
     if score is not None and score.white().is_mate():
         return f"#{score.white().mate()}"
+    # mated: #0 when White gave it, #-0 when Black did
     if abs(cp) >= 100000:
-        return "#"
+        return "#0" if cp > 0 else "#-0"
     return f"{cp / 100:+.2f}"
 
 
@@ -242,3 +243,10 @@ def analyse(game, engine, progress=None):
         if progress:
             progress(i, len(boards) - 1)
     return nodes, boards, infos
+
+
+def parse_eval(text):
+    """White-POV cp of what describe() wrote."""
+    if text.startswith("#"):
+        return -100000 if text.startswith("#-") else 100000
+    return round(float(text) * 100)

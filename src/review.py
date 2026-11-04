@@ -18,7 +18,7 @@ import chess.pgn
 
 import analysis as an
 import deck
-from common import CHESS_DIR, ENGINES, Engine, get, get_json, is_maia, lichess_token
+from common import AGENT, CHESS_DIR, ENGINES, Engine, get, get_json, is_maia, lichess_token
 
 PHASES = ("opening", "middlegame", "endgame")
 
@@ -63,8 +63,7 @@ def link(h):
     return h.get("Link") or h.get("Site", "")
 
 
-def filename(game):
-    h = game.headers
+def filename(h):
     ident = link(h).rstrip("/").rsplit("/", 1)[-1] or "game"
     name = f"{h.get('Date', '').replace('.', '-')}-{h.get('White')}-{h.get('Black')}-{ident}"
     return re.sub(r"[^\w.-]+", "_", name) + ".pgn"
@@ -111,9 +110,10 @@ def book(game, me, ratings):
                     f"{m['san']} {round(100 * counts[m['san']] / total)}%"
                     for m in data["moves"][:3]
                 )
+                share = f"{played:,} of {total:,} games" if played else "rarely played"
                 return (
-                    f"you left it at {numbered(board, node.move)} ({played} of {total} "
-                    f"games); usual: {usual or 'no games here'}"
+                    f"you left it at {numbered(board, node.move)} ({share}); "
+                    f"usual: {usual or 'no games here'}"
                 )
         else:
             theirs = numbered(board, node.move)
@@ -203,20 +203,54 @@ def judge_moves(game, nodes, boards, infos, division):
     return marks
 
 
-def review(game, engine, me, args, cards, stats):
-    def progress(i, total):
-        print(f"\r  analysing {i}/{total}", end="", file=sys.stderr)
-
+def run(game, engine, me=None, ratings=None, progress=None):
+    """Judges the game, writes it annotated to $CHESS_DIR/reviews and says
+    how it went: accuracy, by phase, the marked moves, where the book was
+    left (with `ratings`, for `me`) and your mistakes as training cards."""
     # a PGN reviewed before: its marks and lines are made again
     for node in game.mainline():
         node.nags.clear()
         del node.parent.variations[1:]
     nodes, boards, infos = an.analyse(game, engine, progress)
-    print("\r\033[K", end="", file=sys.stderr)
     division = an.divide(boards)
     accuracy = an.game_accuracy([i["cp"] for i in infos], boards[0].turn)
     by_phase = phase_accuracy(infos, boards, division)
     marks = judge_moves(game, nodes, boards, infos, division)
+    exit = book(game, me, ratings) if me is not None and ratings else None
+
+    h = game.headers
+    h["Annotator"] = AGENT
+    for side, key in ((chess.WHITE, "WhiteAccuracy"), (chess.BLACK, "BlackAccuracy")):
+        if side in accuracy:
+            h[key] = str(round(accuracy[side]))
+    if exit:
+        h["BookExit"] = exit
+    path = CHESS_DIR / "reviews" / filename(game.headers)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(game) + "\n")
+
+    cards = [
+        card_of(game, m["i"], boards, infos, m["node"], m["mark"], m["phase"], m["tags"], me)
+        for m in marks
+        if m["mover"] == me and m["mark"] != an.INACCURACY
+    ]
+    return {
+        "accuracy": accuracy,
+        "by_phase": by_phase,
+        "marks": marks,
+        "book": exit,
+        "path": path,
+        "cards": cards,
+    }
+
+
+def review(game, engine, me, args, cards, stats):
+    def progress(i, total):
+        print(f"\r  analysing {i}/{total}", end="", file=sys.stderr)
+
+    r = run(game, engine, me, args.ratings if args.book else None, progress)
+    print("\r\033[K", end="", file=sys.stderr)
+    accuracy, by_phase, marks = r["accuracy"], r["by_phase"], r["marks"]
 
     for m in marks:
         if m["mover"] != me or m["mark"] == an.INACCURACY:
@@ -225,23 +259,9 @@ def review(game, engine, me, args, cards, stats):
         stats["tags"].update(
             m["tags"] + (["endgame"] if m["phase"] == "endgame" else [])
         )
-        if not args.no_train:
-            card = card_of(
-                game,
-                m["i"],
-                boards,
-                infos,
-                m["node"],
-                m["mark"],
-                m["phase"],
-                m["tags"],
-                me,
-            )
+    if not args.no_train:
+        for card in r["cards"]:
             stats["new"] += deck.add(cards, card)
-
-    path = CHESS_DIR / "reviews" / filename(game)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(str(game) + "\n")
 
     h = game.headers
     print(
@@ -269,7 +289,7 @@ def review(game, engine, me, args, cards, stats):
                 if side in accs:
                     stats["by_phase"][p].append(accs[side])
     if me is not None and args.book:
-        print(f"  book  {book(game, me, args.ratings) or 'stayed in book'}")
+        print(f"  book  {r['book'] or 'stayed in book'}")
     for side in [me] if me is not None else [chess.WHITE, chess.BLACK]:
         for m in marks:
             if m["mover"] != side or m["mark"] == an.INACCURACY:
@@ -280,7 +300,7 @@ def review(game, engine, me, args, cards, stats):
                 f"{m['before']:>6} -> {m['after']:<6} best {m['best']:<7} "
                 f"{', '.join(m['tags'])}"
             )
-    print(f"  {path}")
+    print(f"  {r['path']}")
     if args.upload:
         url = get_json(
             "https://lichess.org/api/import",

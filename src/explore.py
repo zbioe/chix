@@ -1,342 +1,212 @@
-# chess-explore [MOVES... | --fen FEN]: walk an opening through the Lichess
-# explorer (every move played from the position, with its results) and an
-# engine; `tree` lays out the main variations from where you are
-import argparse
-import json
-import readline  # noqa: F401  line editing and history for input()
-import subprocess
-import sys
-import urllib.error
-import urllib.parse
-from pathlib import Path
-
+# The opening explorer: every move played from the position (Lichess' games,
+# the masters' or a player's), with its results, next to an engine's best
+# lines. Click a move on the board or in the table to go on
 import chess
 import chess.pgn
+from rich.text import Text
+from textual import work
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import Screen
+from textual.widgets import DataTable, Footer, Static
 
-from common import (
-    CHESS_DIR,
-    ENGINES,
-    Engine,
-    clear,
-    color,
-    draw,
-    get,
-    lichess_token,
-    line_san,
-)
+import analysis as an
+from board import BoardView, EvalBar, legend
+from common import CHESS_DIR, Explorer, ExplorerError, line_san, open_url, score_text
 
-EXPLORER = "https://explorer.lichess.ovh"
-HELP = """\
-  MOVE          play it (e4, Nf3, e2e4) or the Nth move of the table (1, 2...)
-  b [N]         back N moves (1)
-  r             back to the start
-  f             flip the board
-  e             engine on or off
-  engine NAME   another engine: {engines}
-  t SECONDS     engine time per position
-  db masters | lichess | player NAME [white|black]
-                which games the explorer counts
-  tree [DEPTH] [WIDTH]
-                the variations from here: the WIDTH most played moves of
-                each position, DEPTH moves deep (3 3)
-  pgn           the line so far
-  save [FILE]   add the line to FILE ($CHESS_DIR/repertoire.pgn)
-  web           open the position on Lichess
-  q             quit"""
+DBS = ["lichess", "masters", "player"]
 
 
-class ExplorerError(Exception):
-    pass
-
-
-class Explorer:
-    def __init__(self, args):
-        self.db = args.db
-        self.player = args.player
-        self.color = args.color
-        self.speeds = args.speeds
-        self.ratings = args.ratings
-        self.cache = {}
-
-    def describe(self):
-        if self.db == "player":
-            return f"{self.player}'s games as {self.color}"
-        if self.db == "lichess":
-            return f"Lichess {self.speeds} {self.ratings}"
-        return "masters"
-
-    def query(self, board):
-        token = lichess_token()
-        if not token:
-            raise ExplorerError(
-                "the explorer needs a Lichess token: dotnix.games.chess.lichess.enable"
-            )
-        params = {"fen": board.fen(), "moves": 15, "topGames": 0, "recentGames": 0}
-        if self.db == "lichess":
-            params |= {"speeds": self.speeds, "ratings": self.ratings}
-        elif self.db == "player":
-            params |= {"player": self.player, "color": self.color}
-        key = (self.db, self.player, self.color, board.fen())
-        if key not in self.cache:
-            url = f"{EXPLORER}/{self.db}?{urllib.parse.urlencode(params)}"
-            try:
-                lines = get(url, token=token).strip().splitlines()
-            except urllib.error.HTTPError as e:
-                if e.code == 429:
-                    raise ExplorerError("Lichess asks to wait a minute (429)") from e
-                raise ExplorerError(f"explorer: HTTP {e.code}") from e
-            # the player database streams updates: the last one is complete
-            self.cache[key] = json.loads(lines[-1])
-        return self.cache[key]
-
-
-def percent(part, total):
-    return round(100 * part / total) if total else 0
-
-
-def bar(white, draws, black, width=24):
-    total = white + draws + black
+def wdb_bar(m, width=10):
+    total = m["white"] + m["draws"] + m["black"]
+    text = Text()
     if not total:
-        return ""
-    w = round(width * white / total)
-    d = round(width * draws / total)
-    return (
-        color((240, 240, 240), "█" * w)
-        + color((128, 128, 128), "█" * d)
-        + color((40, 40, 40), "█" * (width - w - d))
-    )
+        return text
+    w = round(width * m["white"] / total)
+    d = round(width * m["draws"] / total)
+    text.append("█" * w, style="grey93")
+    text.append("█" * d, style="grey50")
+    text.append("█" * (width - w - d), style="grey15")
+    pct = lambda n: round(100 * n / total)  # noqa: E731
+    text.append(f" {pct(m['white'])}/{pct(m['draws'])}/{pct(m['black'])}", style="dim")
+    return text
 
 
-def score_text(score):
-    s = score.white()
-    if s.is_mate():
-        return f"#{s.mate()}"
-    return f"{s.score() / 100:+.2f}"
+class ExploreScreen(Screen):
+    BINDINGS = [
+        Binding("left", "back", "back", priority=True),
+        Binding("home", "start", "start", priority=True),
+        Binding("f", "flip", "flip"),
+        Binding("e", "engine", "engine on/off"),
+        Binding("d", "db", "games: lichess/masters/you"),
+        Binding("s", "save", "save line"),
+        Binding("w", "web", "lichess"),
+        Binding("escape", "app.pop_screen", "back"),
+    ]
+    CSS = """
+    #left { width: 3fr; }
+    #side { width: 2fr; padding: 0 1; }
+    #name { text-style: bold; }
+    #moves { height: 1fr; }
+    #engine { height: auto; min-height: 4; border-top: solid $primary-darken-2; }
+    """
 
-
-def results(m):
-    n = m["white"] + m["draws"] + m["black"]
-    return (
-        n,
-        f"{percent(m['white'], n)}/{percent(m['draws'], n)}/{percent(m['black'], n)}",
-    )
-
-
-class Session:
-    def __init__(self, args, board):
-        self.explorer = Explorer(args)
-        self.board = board
-        self.start = board.root()
-        self.flipped = False
+    def __init__(self, board=None, engine="stockfish", user=None):
+        super().__init__()
+        self.start = (board or chess.Board()).copy()
+        self.position = self.start.copy()
+        self.engine_name = engine
         self.engine_on = True
-        self.engine = Engine(args.engine, args.time)
-        self.moves = []
+        self.explorer = Explorer()
+        self.user = user
         self.opening = None
+        self.rows = []
 
-    def analyse(self):
-        if not self.engine_on or self.board.is_game_over():
-            return []
-        return self.engine.analyse(self.board, multipv=3)
+    def compose(self) -> ComposeResult:
+        with Horizontal():
+            yield EvalBar(id="eval")
+            with Vertical(id="left"):
+                yield BoardView(self.position.copy(), player=(chess.WHITE, chess.BLACK))
+                yield Static(legend(["last", "best", "selected"]))
+            with Vertical(id="side"):
+                yield Static(id="name")
+                yield Static(id="db")
+                yield DataTable(id="moves", cursor_type="row", zebra_stripes=True)
+                yield Static(id="engine")
+        yield Footer()
 
-    def show(self):
-        clear()
-        print(draw(self.board, self.flipped))
+    def on_mount(self):
+        table = self.query_one(DataTable)
+        table.add_columns("move", "played", "games", "white / draw / black", "rating")
+        self.board = self.query_one(BoardView)
+        self.refresh_all()
+
+    def refresh_all(self):
+        self.board.show(self.position.copy())
+        self.query_one("#db").update(f"[dim]{self.explorer.describe()}[/dim]")
+        self.load_moves(self.position.copy())
+        self.load_engine(self.position.copy())
+
+    @work(thread=True, exclusive=True, group="explorer")
+    def load_moves(self, board):
         try:
-            data = self.explorer.query(self.board)
+            data = self.explorer.query(board)
         except ExplorerError as e:
-            data = None
-            print(f"\n  {e}")
-        if data:
-            self.opening = data.get("opening") or self.opening
-            total = data["white"] + data["draws"] + data["black"]
-            name = (
-                f"{self.opening['eco']} {self.opening['name']}" if self.opening else ""
-            )
-            print(f"\n  {name}")
-            print(f"  {total:,} games, {self.explorer.describe()}\n")
-            self.moves = [chess.Move.from_uci(m["uci"]) for m in data["moves"]]
-            for i, m in enumerate(data["moves"], 1):
-                n, wdb = results(m)
-                print(
-                    f"  {i:>2} {m['san']:<7} {percent(n, total):>3}% {n:>10,}  "
-                    f"{bar(m['white'], m['draws'], m['black'])} {wdb:<9}"
-                    f" {m.get('averageRating') or '':>5}"
-                )
-            if not data["moves"]:
-                print("  out of book")
-        lines = self.analyse()
-        if lines:
-            print(f"\n  {self.engine.name}", end="")
-        for info in lines:
-            pv = line_san(self.board, info.get("pv", []))
-            print(f"\n  {score_text(info['score']):>6}  {pv}", end="")
-        print("\n")
-
-    def play(self, text):
-        if text.isdigit():
-            i = int(text) - 1
-            if not 0 <= i < len(self.moves):
-                raise ValueError(f"no move {text} in the table")
-            self.board.push(self.moves[i])
+            self.app.call_from_thread(self.show_moves, board, None, str(e))
             return
-        try:
-            self.board.push_san(text)
-        except ValueError:
-            try:
-                self.board.push_uci(text)
-            except ValueError:
-                raise ValueError(f"not a move: {text}") from None
+        self.app.call_from_thread(self.show_moves, board, data, None)
 
-    def game(self):
+    def show_moves(self, board, data, error):
+        if board.fen() != self.position.fen():
+            return
+        table = self.query_one(DataTable)
+        table.clear()
+        self.rows = []
+        if error:
+            self.query_one("#name").update(f"[red]{error}[/red]")
+            return
+        self.opening = data.get("opening") or self.opening
+        total = data["white"] + data["draws"] + data["black"]
+        name = f"{self.opening['eco']} {self.opening['name']}" if self.opening else ""
+        self.query_one("#name").update(f"{name}\n[dim]{total:,} games[/dim]")
+        for m in data["moves"]:
+            n = m["white"] + m["draws"] + m["black"]
+            table.add_row(
+                Text(m["san"], style="bold"),
+                f"{round(100 * n / total) if total else 0}%",
+                f"{n:,}",
+                wdb_bar(m),
+                str(m.get("averageRating") or ""),
+            )
+            self.rows.append(chess.Move.from_uci(m["uci"]))
+        if not data["moves"]:
+            table.add_row("out of book", "", "", "", "")
+
+    @work(thread=True, exclusive=True, group="engine")
+    def load_engine(self, board):
+        if not self.engine_on or board.is_game_over():
+            self.app.call_from_thread(self.show_engine, board, None)
+            return
+        lines = self.app.engine(self.engine_name).analyse(board, multipv=3)
+        self.app.call_from_thread(self.show_engine, board, lines)
+
+    def show_engine(self, board, lines):
+        if board.fen() != self.position.fen():
+            return
+        bar = self.query_one(EvalBar)
+        bar.flipped = self.board.flipped
+        if not lines:
+            bar.set(None, "")
+            self.query_one("#engine").update("[dim]engine off (e)[/dim]")
+            return
+        cp = an.cp_of(lines[0]["score"].white())
+        bar.set(cp, score_text(lines[0]["score"]))
+        out = [f"[b]{self.engine_name}[/b]"]
+        for info in lines:
+            pv = line_san(board, info.get("pv", []))
+            out.append(f"[b]{score_text(info['score']):>6}[/b]  {pv}")
+        self.query_one("#engine").update("\n".join(out))
+        best = (lines[0].get("pv") or [None])[0]
+        if best:
+            self.board.mark({best.from_square: "best", best.to_square: "best"})
+
+    def play(self, move):
+        self.position.push(move)
+        self.refresh_all()
+
+    def on_board_view_moved(self, event):
+        self.play(event.move)
+
+    def on_data_table_row_selected(self, event):
+        i = event.cursor_row
+        if 0 <= i < len(self.rows):
+            self.play(self.rows[i])
+
+    def action_back(self):
+        if len(self.position.move_stack) > len(self.start.move_stack):
+            self.position.pop()
+            self.refresh_all()
+
+    def action_start(self):
+        self.position = self.start.copy()
+        self.refresh_all()
+
+    def action_flip(self):
+        self.board.flip()
+        self.query_one(EvalBar).flipped = self.board.flipped
+        self.query_one(EvalBar).refresh()
+
+    def action_engine(self):
+        self.engine_on = not self.engine_on
+        self.load_engine(self.position.copy())
+
+    def action_db(self):
+        dbs = DBS if self.user else DBS[:2]
+        self.explorer.db = dbs[(dbs.index(self.explorer.db) + 1) % len(dbs)]
+        if self.explorer.db == "player":
+            self.explorer.player = self.user
+            self.explorer.color = "white" if not self.board.flipped else "black"
+        self.refresh_all()
+
+    def action_save(self):
         game = chess.pgn.Game()
-        if self.start.fen() != chess.STARTING_FEN:
-            game.setup(self.start)
+        if self.start.root().fen() != chess.STARTING_FEN:
+            game.setup(self.start.root())
         node = game
-        for m in self.board.move_stack:
+        for m in self.position.move_stack:
             node = node.add_variation(m)
         if self.opening:
             game.headers["Opening"] = self.opening["name"]
             game.headers["ECO"] = self.opening["eco"]
         game.headers["Event"] = "Repertoire"
-        return game
+        path = CHESS_DIR / "repertoire.pgn"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            print(game, file=f, end="\n\n")
+        moves = line_san(self.position.root(), self.position.move_stack, limit=40)
+        self.notify(f"{moves}\nsaved to {path}")
 
-    def tree(self, depth, width):
-        def walk(board, level):
-            if level == depth:
-                return
-            data = self.explorer.query(board)
-            total = data["white"] + data["draws"] + data["black"]
-            for m in data["moves"][:width]:
-                n, wdb = results(m)
-                num = f"{board.fullmove_number}{'.' if board.turn else '...'}"
-                name = (m.get("opening") or {}).get("name", "")
-                print(
-                    f"{'  ' * level}{num}{m['san']:<6} {percent(n, total):>3}%  {wdb}  {name}"
-                )
-                board.push(chess.Move.from_uci(m["uci"]))
-                walk(board, level + 1)
-                board.pop()
-
-        walk(self.board.copy(), 0)
-
-    def command(self, text):
-        cmd, *rest = text.split()
-        if cmd == "q":
-            raise EOFError
-        if cmd in ("h", "?", "help"):
-            print(HELP.format(engines=", ".join(sorted(ENGINES))))
-            return False
-        if cmd == "b":
-            back = int(rest[0]) if rest else 1
-            for _ in range(min(back, len(self.board.move_stack))):
-                self.board.pop()
-        elif cmd == "r":
-            self.board = self.start.copy()
-        elif cmd == "f":
-            self.flipped = not self.flipped
-        elif cmd == "e":
-            self.engine_on = not self.engine_on
-        elif cmd == "engine":
-            if rest[0] not in ENGINES:
-                raise ValueError(f"no engine {rest[0]}: {', '.join(sorted(ENGINES))}")
-            seconds = self.engine.seconds
-            self.engine.quit()
-            self.engine = Engine(rest[0], seconds)
-        elif cmd == "t":
-            self.engine.seconds = float(rest[0])
-        elif cmd == "db":
-            self.explorer.db = rest[0]
-            if rest[0] == "player":
-                self.explorer.player = rest[1]
-                self.explorer.color = rest[2] if len(rest) > 2 else "white"
-        elif cmd == "tree":
-            self.tree(int(rest[0]) if rest else 3, int(rest[1]) if len(rest) > 1 else 3)
-            return False
-        elif cmd == "pgn":
-            print(self.game().accept(chess.pgn.StringExporter(headers=False)))
-            return False
-        elif cmd == "save":
-            path = Path(rest[0]) if rest else CHESS_DIR / "repertoire.pgn"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a") as f:
-                print(self.game(), file=f, end="\n\n")
-            print(f"saved to {path}")
-            return False
-        elif cmd == "web":
-            fen = self.board.fen().replace(" ", "_")
-            subprocess.Popen(
-                ["xdg-open", f"https://lichess.org/analysis/standard/{fen}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return False
-        else:
-            self.play(cmd)
-        return True
-
-    def run(self):
-        redraw = True
-        while True:
-            if redraw:
-                self.show()
-            prompt = "white" if self.board.turn else "black"
-            try:
-                text = input(f"{prompt}> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                break
-            if not text:
-                redraw = False
-                continue
-            try:
-                redraw = self.command(text)
-            except EOFError:
-                break
-            except (ValueError, IndexError, ExplorerError) as e:
-                print(f"  {e or 'see h'}")
-                redraw = False
-
-
-def main():
-    p = argparse.ArgumentParser(
-        prog="chess-explore",
-        description="Opening explorer: Lichess games plus an engine",
-    )
-    p.add_argument("moves", nargs="*", help="a line to start from: e4 e5 Nf3")
-    p.add_argument("--fen", help="a position to start from")
-    p.add_argument("--db", choices=["masters", "lichess", "player"], default="lichess")
-    p.add_argument("--player", help="whose games, with --db player")
-    p.add_argument("--color", choices=["white", "black"], default="white")
-    p.add_argument("--speeds", default="blitz,rapid,classical")
-    p.add_argument("--ratings", default="1800,2000,2200,2500")
-    p.add_argument("--engine", default="stockfish", choices=sorted(ENGINES))
-    p.add_argument(
-        "--time", type=float, default=0.5, help="engine seconds per position"
-    )
-    p.add_argument(
-        "--tree",
-        nargs="*",
-        type=int,
-        metavar="N",
-        help="print the tree (DEPTH WIDTH) and exit",
-    )
-    args = p.parse_args()
-    if args.db == "player" and not args.player:
-        p.error("--db player needs --player")
-
-    board = chess.Board(args.fen) if args.fen else chess.Board()
-    for m in args.moves:
-        board.push_san(m)
-    session = Session(args, board)
-    try:
-        if args.tree is not None:
-            session.tree(*(args.tree or [3, 3]))
-        else:
-            session.run()
-    except ExplorerError as e:
-        sys.exit(f"chess-explore: {e}")
-    finally:
-        session.engine.quit()
-
-
-if __name__ == "__main__":
-    main()
+    def action_web(self):
+        fen = self.position.fen().replace(" ", "_")
+        open_url(f"https://lichess.org/analysis/standard/{fen}")

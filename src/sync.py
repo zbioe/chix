@@ -47,6 +47,33 @@ def chesscom(user, state):
     state["months"] = sorted(done)
 
 
+def sync(site, user, progress=None):
+    """(new games, games in all, the file). What was written is remembered
+    even when stopped (Ctrl-C) halfway."""
+    out = CHESS_DIR / "games"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{site}-{user.lower()}.pgn"
+    state_path = out / f".{site}-{user.lower()}.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    seen = set(state.get("ids", []))
+    fetch = lichess if site == "lichess" else chesscom
+    new = 0
+    try:
+        with path.open("a") as f:
+            for game in fetch(user, state):
+                if game_id(game) in seen:
+                    continue
+                print(game, file=f, end="\n\n")
+                seen.add(game_id(game))
+                new += 1
+                if progress:
+                    progress(new)
+    finally:
+        state["ids"] = sorted(seen)
+        state_path.write_text(json.dumps(state))
+    return new, len(seen), path
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="chess-sync", description="Download all of a user's games"
@@ -54,32 +81,15 @@ def main():
     p.add_argument("site", choices=["lichess", "chesscom"])
     p.add_argument("user")
     args = p.parse_args()
-
-    out = CHESS_DIR / "games"
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{args.site}-{args.user.lower()}.pgn"
-    state_path = out / f".{args.site}-{args.user.lower()}.json"
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    seen = set(state.get("ids", []))
-
-    fetch = lichess if args.site == "lichess" else chesscom
-    new = 0
-    # what was written is remembered even when stopped (Ctrl-C) halfway
     try:
-        with path.open("a") as f:
-            for game in fetch(args.user, state):
-                if game_id(game) in seen:
-                    continue
-                print(game, file=f, end="\n\n")
-                seen.add(game_id(game))
-                new += 1
-                print(f"\r  {new} games", end="", file=sys.stderr)
+        new, total, path = sync(
+            args.site,
+            args.user,
+            lambda n: print(f"\r  {n} games", end="", file=sys.stderr),
+        )
     except KeyboardInterrupt:
-        print("\r  stopped, run it again to go on", file=sys.stderr)
-    finally:
-        state["ids"] = sorted(seen)
-        state_path.write_text(json.dumps(state))
-    print(f"\r{new} new games, {len(seen)} in {path}")
+        sys.exit("\r  stopped, run it again to go on")
+    print(f"\r{new} new games, {total} in {path}")
 
 
 if __name__ == "__main__":
