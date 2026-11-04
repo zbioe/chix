@@ -4,6 +4,8 @@
 import argparse
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 import chess
 from textual.app import App, ComposeResult
@@ -59,8 +61,13 @@ class HomeScreen(Screen):
         menu.add_options(
             [
                 item(
+                    "window",
+                    "Learn an opening, in a window",
+                    "the same lines and progress, on a board you drag pieces on",
+                ),
+                item(
                     "openings",
-                    "Learn an opening",
+                    "Learn an opening, here",
                     f"by its name, every variation, line by line ({lines_due} to review)",
                 ),
                 item(
@@ -83,7 +90,15 @@ class HomeScreen(Screen):
     def on_option_list_option_selected(self, event):
         key = event.option.id
         app = self.app
-        if key == "openings":
+        if key == "window":
+            subprocess.Popen(
+                [sys.executable, Path(__file__).parent / "gui.py"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.notify("Chess Openings opens in a window")
+        elif key == "openings":
             app.push_screen(PickScreen(app.families()))
         elif key == "train":
             cards = deck.load()

@@ -1,5 +1,6 @@
-# Chess from the terminal, the GUIs and Emacs. `chess` is an app with the
-# mouse: openings learned by name, line by line; your games (Lichess and
+# Chess from the terminal, the GUIs and Emacs. chess-openings is a window:
+# an opening learned by name, line by line, every variation. `chess` is an
+# app for the terminal, with the mouse: the openings too; your games (Lichess and
 # chess.com) reviewed as Lichess does; your mistakes and puzzles to train;
 # the explorer. chess-tui plays Lichess or an engine; chess-review and
 # chess-sync work from the shell. The engines come with the host
@@ -80,7 +81,25 @@ let
   python = pkgs.python3.withPackages (p: [
     p.chess
     p.textual
+    # the openings' window: WebKitGTK
+    p.pywebview
+    p.pygobject3
   ]);
+
+  # what pywebview's GTK window loads through GObject introspection
+  typelibs = lib.makeSearchPath "lib/girepository-1.0" (
+    map lib.getLib [
+      pkgs.gtk3
+      pkgs.webkitgtk_4_1
+      pkgs.glib
+      pkgs.gdk-pixbuf
+      pkgs.pango
+      pkgs.harfbuzz
+      pkgs.at-spi2-core
+      pkgs.libsoup_3
+      pkgs.gobject-introspection
+    ]
+  );
 
   users = lib.concatStringsSep " " (
     lib.optional (cfg.lichess.user != null) "lichess:${cfg.lichess.user}"
@@ -99,6 +118,7 @@ let
         export CHESS_USERS="${users}"
         export CHESS_TUI=${lib.getExe tui}
         export CHESS_DIR="$HOME/chess"
+        export GI_TYPELIB_PATH=${typelibs}
         ${lib.optionalString cfg.lichess.enable "export LICHESS_TOKEN_FILE=${token}"}
         exec ${python}/bin/python3 ${./.}/${script} "$@"
       '';
@@ -181,7 +201,8 @@ in
           tui
           (tool "chess" "app.py")
           # its screens, straight
-          (tool "chess-openings" "app.py openings")
+          # the openings in a window; `chess openings` is the terminal's
+          (tool "chess-openings" "gui.py")
           (tool "chess-games" "app.py games")
           (tool "chess-train" "app.py train")
           (tool "chess-puzzle" "app.py puzzle")
@@ -199,13 +220,15 @@ in
         xdg.desktopEntries = lib.mkMerge [
           (lib.mkIf (config.dotnix.desktop.terminals.default != null) {
             chess = entry "Chess" "Openings, your games reviewed, training and puzzles" "${terminal} chess";
-            chess-openings =
-              entry "Chess Openings" "Learn an opening by its name, every variation"
-                "${terminal} chess-openings";
             chess-tui =
               entry "Chess (terminal)" "Play Lichess or an engine in the terminal"
                 "${terminal} chess-tui";
           })
+          {
+            chess-openings =
+              entry "Chess Openings" "Learn an opening by its name, every variation"
+                "chess-openings";
+          }
           # chess.com has no API to play: its site in a window of its own
           (lib.mkIf (osConfig.dotnix.desktop.browsers.default != null) {
             chess-com = entry "Chess.com" "Play on chess.com" (site "https://www.chess.com/play/online");

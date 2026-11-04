@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Openings</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <button id="home-btn" class="brand" title="All the openings (Esc)">♞ Openings</button>
+  <input id="search" type="search" placeholder="Search an opening or a variation: bishop, sicilian, urusov, caro…" autocomplete="off">
+  <div id="stats">
+    <span class="stat" title="Points: right moves and lines played from memory"><b id="score">0</b> pts</span>
+    <span class="stat" title="Right moves in a row"><span class="fire">🔥</span><b id="streak">0</b></span>
+    <button id="sound" class="icon" title="Sound on/off">🔊</button>
+  </div>
+</header>
+
+<main id="home" class="view">
+  <section id="filters">
+    <button data-filter="all" class="chip on">All</button>
+    <button data-filter="white" class="chip">Played as White</button>
+    <button data-filter="black" class="chip">Played as Black</button>
+    <button data-filter="started" class="chip">Started</button>
+  </section>
+  <p id="home-hint" class="dim"></p>
+  <section id="cards"></section>
+</main>
+
+<main id="study" class="view hidden">
+  <section id="left">
+    <div id="board-wrap"><div id="board"></div></div>
+    <div id="controls">
+      <button data-nav="start" title="Start (Home)">⏮</button>
+      <button data-nav="back" title="Back (←)">◀</button>
+      <button data-nav="forward" title="Forward (→)">▶</button>
+      <button data-nav="end" title="End of the main line (End)">⏭</button>
+      <button data-nav="flip" title="Flip the board (f)">⇅</button>
+    </div>
+    <div id="legend">
+      <span><i class="sw arrow-green"></i>your move to play</span>
+      <span><i class="sw arrow-blue"></i>book moves from here</span>
+      <span><i class="sw last"></i>last move</span>
+      <span><i class="sw wrong"></i>not this one</span>
+    </div>
+  </section>
+
+  <aside id="panel">
+    <div id="head">
+      <div>
+        <h1 id="family"></h1>
+        <div id="sub" class="dim"></div>
+      </div>
+      <button id="color-btn" class="pill" title="Learn it with the other side (c)"></button>
+    </div>
+    <div id="progress"><div id="bar"><i></i></div><span id="progress-text"></span></div>
+
+    <div id="quest">
+      <div id="quest-title"></div>
+      <div id="quest-line"></div>
+      <div id="message"></div>
+      <div id="actions"></div>
+    </div>
+
+    <div id="moves-box">
+      <div class="box-title">Moves of this line</div>
+      <div id="moves"></div>
+    </div>
+
+    <div id="next-box">
+      <div class="box-title">Book moves from here <span class="dim">(hover to see, click to play)</span></div>
+      <div id="next"></div>
+    </div>
+
+    <div id="tree-box">
+      <div class="box-title">Every variation <span class="dim">(click a move to go there, ▶ to train that branch)</span></div>
+      <div id="tree"></div>
+    </div>
+
+    <div id="keys" class="dim">
+      <b>←/→</b> moves · <b>↑/↓</b> pick a book move · <b>h</b> hint · <b>n</b> next line · <b>r</b> again · <b>e</b> explore · <b>f</b> flip · <b>c</b> other side · <b>Esc</b> openings
+    </div>
+  </aside>
+</main>
+
+<canvas id="confetti"></canvas>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
