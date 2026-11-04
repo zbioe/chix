@@ -1,0 +1,77 @@
+{
+  "nodes": {
+    "chess-openings": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793719027,
+        "narHash": "sha256-IAuhK5d+eUPYsCN7c98AB7s/bLmWZunGoro6199XrMI=",
+        "owner": "lichess-org",
+        "repo": "chess-openings",
+        "rev": "3fd6ce992679e4d991a6bb4dade71f2b826c568a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "lichess-org",
+        "repo": "chess-openings",
+        "type": "github"
+      }
+    },
+    "maia": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779649597,
+        "narHash": "sha256-OEgrFdB+Rm/OLq6Ixu8JlILYNAXqv/Hz4c1rO+F1YzY=",
+        "owner": "CSSLab",
+        "repo": "maia-chess",
+        "rev": "749204cf5979ce7f8b0412e804a4ee7c83c49ff8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "CSSLab",
+        "repo": "maia-chess",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1793726008,
+        "narHash": "sha256-jQp1wKvbwWdLBASTXkSi/VYmDJ5AbBi1WvcMt9HWJC8=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "chess-openings": "chess-openings",
+        "maia": "maia",
+        "nixpkgs": "nixpkgs",
+        "systems": "systems"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1689347949,
+        "narHash": "sha256-12tWmuL2zgBgZkdoB6qXZsgJEH9LR3oUgpaQq2RbI80=",
+        "owner": "nix-systems",
+        "repo": "default-linux",
+        "rev": "31732fcf5e8fea42e59c2488ad31a0e651500f68",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default-linux",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

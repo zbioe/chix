@@ -1,4 +1,4 @@
-# chess-openings-gui: the openings in a window of their own. The same lines
+# chess-openings: the openings in a window of their own. The same lines
 # and progress as the terminal's (openings.json), on a board you drag pieces
 # on: learn a line with arrows, play it from memory, walk every variation
 import sys

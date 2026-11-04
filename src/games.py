@@ -18,7 +18,7 @@ from textual.widgets import DataTable, Footer, Input, ProgressBar, Sparkline, St
 import analysis as an
 import deck
 from board import BoardView, EvalBar, legend
-from common import AGENT, CHESS_DIR, line_san, open_url
+from common import AGENTS, CHESS_DIR, line_san, open_url
 from review import PHASES, filename, link, opening, run
 from sync import sync
 from train import good_enough
@@ -248,7 +248,7 @@ class GameScreen(Screen):
         rp = review_path(self.h)
         reviewed = rp.exists() and read_game(rp, 0)
         # reviews from before the accuracy headers are made again
-        self.reviewed = bool(reviewed) and reviewed.headers.get("Annotator") == AGENT
+        self.reviewed = bool(reviewed) and reviewed.headers.get("Annotator") in AGENTS
         self.game = reviewed if self.reviewed else read_game(*self.source)
         self.nodes = list(self.game.mainline())
         self.boards = [self.game.board()] + [n.board() for n in self.nodes]

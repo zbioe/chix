@@ -1,5 +1,5 @@
 # What the chess tools share: the engines (CHESS_ENGINES, from
-# pkgs/chess-engines), the HTTP calls and the Lichess opening explorer
+# nix/engines.nix), the HTTP calls and the Lichess opening explorer
 import json
 import os
 import subprocess
@@ -12,7 +12,9 @@ from pathlib import Path
 import chess
 import chess.engine
 
-AGENT = "dotnix-chess"
+AGENT = "chix"
+# what the reviews were signed with before
+AGENTS = (AGENT, "dotnix-chess")
 EXPLORER = "https://explorer.lichess.ovh"
 ENGINES = json.loads(Path(os.environ["CHESS_ENGINES"]).read_text())
 CHESS_DIR = Path(os.environ["CHESS_DIR"])
@@ -142,7 +144,7 @@ class Explorer:
         token = lichess_token()
         if not token:
             raise ExplorerError(
-                "the explorer needs the Lichess token: dotnix.games.chess.lichess.enable"
+                "the explorer needs the Lichess token: programs.chix.lichess.tokenFile"
             )
         params = {"fen": board.fen(), "moves": moves, "topGames": 0, "recentGames": 0}
         if self.db == "lichess":
