@@ -223,7 +223,7 @@ class Board {
     const svg = document.createElementNS(ns, "svg");
     svg.setAttribute("class", "arrows");
     svg.setAttribute("viewBox", "0 0 8 8");
-    const colors = { green: "#15781b", blue: "#003088", hover: "#3692e7", red: "#882020" };
+    const colors = { green: "#15781b", blue: "#003088", hover: "#3692e7", red: "#882020", engine: "#8a3fbf", gray: "#6b6762" };
     const defs = document.createElementNS(ns, "defs");
     for (const [name, c] of Object.entries(colors)) {
       defs.insertAdjacentHTML(
@@ -401,6 +401,15 @@ const S = {
   timer: null,
   open: new Set(),
   pick: 0, // the book move ↑/↓ points at
+  extra: [], // moves played past the book: {uci, san, fen, check}
+  redo: [], // the ones ◀ took back, for ▶
+  tab: "analysis",
+  engineOn: true,
+  db: "lichess",
+  ratings: "1600,1800,2000,2200,2500",
+  an: { fen: null }, // what's known of the position shown
+  hover: null, // the explorer move the mouse is over
+  anTimer: null,
 };
 
 let board;
@@ -430,6 +439,18 @@ function prepare(opening) {
     const n = all[i];
     n.leaves = n.children.length ? n.children.flatMap((c) => all[c].leaves) : [n.id];
   }
+  // a position reached by another move order is still the book's
+  opening.index = {};
+  for (const n of all) opening.index[epd(n.fen)] ??= n.id;
+}
+
+function epd(fen) {
+  return fen.split(" ").slice(0, 4).join(" ");
+}
+
+// the position shown: a book node, or past it
+function curFen() {
+  return S.extra.length ? S.extra[S.extra.length - 1].fen : node(S.node).fen;
 }
 
 function key(leaf) {
@@ -451,6 +472,7 @@ function bump(points) {
 
 async function showHome() {
   clearTimeout(S.timer);
+  clearTimeout(S.anTimer);
   S.opening = null;
   $("#study").classList.add("hidden");
   $("#home").classList.remove("hidden");
@@ -580,7 +602,8 @@ function quest() {
     drill: ["drill", "From memory"],
     explore: ["explore", "Exploring"],
   };
-  const [cls, label] = modes[S.mode];
+  const [cls, label] = S.mode === "explore" && S.extra.length ? ["analysis", "Past the book"] : modes[S.mode];
+  $("#quest").classList.toggle("compact", S.mode === "explore");
   let title = `<span class="mode ${cls}">${label}</span>`;
   if (S.leaf) {
     title += `<span>${S.leaf.label}</span>${starsHtml(stars(card(S.leaf)))}`;
@@ -592,7 +615,7 @@ function quest() {
   const learn = ["▶ Next line <small>(n)</small>", nextLine, S.mode === "explore"];
   if (S.mode === "explore") {
     $("#quest-line").textContent =
-      "Walk the variations: play a book move on the board, click one below or in the tree.";
+      "Play any move: the book's, the games' or the engine's. ◀ takes it back.";
     actions([
       learn,
       [`🎯 Train the lines from here <small>(t)</small>`, trainHere],
@@ -614,22 +637,29 @@ function quest() {
 
 function go(id, { animate = true, sound: snd = true } = {}) {
   const prev = node(S.node);
+  const prevFen = curFen();
+  S.extra = [];
+  S.redo = [];
   S.node = id;
   const n = node(id);
   const moved = n.parent === prev.id ? n.uci : null;
   board.set(n.fen, { last: n.uci, animate: animate && moved, check: n.check });
-  if (snd && moved) sound.play(prev.fen.split(" ")[0].length > n.fen.split(" ")[0].length ? "capture" : "move");
+  if (snd && moved) playSound(prevFen, n.fen);
   S.pick = 0;
   updateMovable();
   renderMoves();
   renderTree();
 }
 
+function playSound(before, after) {
+  sound.play(before.split(" ")[0].length > after.split(" ")[0].length ? "capture" : "move");
+}
+
 async function updateMovable() {
-  const n = node(S.node);
+  const fen = curFen();
+  board.setDests({});
   if (S.mode === "explore") board.movable = "both";
-  else board.movable = !S.timer && turnOf(n.fen) === S.color ? S.color : null;
-  const fen = n.fen;
+  else board.movable = !S.timer && turnOf(fen) === S.color ? S.color : null;
   const dests = await api().dests(fen);
   if (board.fen === fen) board.setDests(dests);
 }
@@ -648,7 +678,22 @@ function renderMoves() {
     s.onclick = () => explore(id);
     box.appendChild(s);
   }
-  if (!path.length) box.innerHTML = '<span class="dim">the starting position</span>';
+  S.extra.forEach((m, i) => {
+    const ply = node(S.node).ply + i + 1;
+    if (ply % 2 === 1) box.insertAdjacentHTML("beforeend", `<span class="num">${(ply + 1) / 2}.</span>`);
+    else if (i === 0 && !path.length) box.insertAdjacentHTML("beforeend", `<span class="num">${ply / 2}…</span>`);
+    const s = document.createElement("span");
+    s.textContent = m.san;
+    s.title = "past the book";
+    s.className = `off${i === S.extra.length - 1 ? " cur" : ""}`;
+    s.onclick = () => {
+      while (S.extra.length > i + 1) S.redo.push(S.extra.pop());
+      showPosition(false);
+    };
+    box.appendChild(s);
+  });
+  if (S.extra.length) for (const c of box.querySelectorAll("span.cur:not(.off)")) c.classList.remove("cur");
+  if (!path.length && !S.extra.length) box.innerHTML = '<span class="dim">the starting position</span>';
 }
 
 function renderNext() {
@@ -658,19 +703,15 @@ function renderNext() {
   const visible = S.mode === "explore";
   $("#next-box").classList.toggle("hidden", !visible);
   if (!visible) return;
-  if (!n.children.length) {
-    box.innerHTML = '<div class="dim">The end of this line. ◀ to go back, or train it.</div>';
-    board.setArrows([]);
+  exploreArrows();
+  if (S.extra.length) {
+    box.innerHTML = '<div class="dim">Past the book: the Analysis tab goes on from here.</div>';
     return;
   }
-  const total = n.children.reduce((a, c) => a + node(c).size, 0);
-  // the main branches only, and the one picked: twenty arrows hide the board
-  const arrows = n.children.map((c, i) => [c, i]).filter(([, i]) => i < 5 || i === S.pick).map(([c, i]) => {
-    const m = node(c).uci;
-    return { from: m.slice(0, 2), to: m.slice(2, 4), color: i === S.pick ? "hover" : "blue",
-      width: 0.08 + 0.14 * (node(c).size / total), opacity: i === S.pick ? 0.9 : 0.7 };
-  });
-  board.setArrows(arrows);
+  if (!n.children.length) {
+    box.innerHTML = '<div class="dim">The end of this line. Play on: the Analysis tab goes on from here.</div>';
+    return;
+  }
   n.children.forEach((c, i) => {
     const child = node(c);
     const learned = leaves(c).filter((l) => stars(card(l))).length;
@@ -681,11 +722,38 @@ function renderNext() {
       `<span class="n">${child.size} line${child.size === 1 ? "" : "s"}${learned ? ` · ${learned}★` : ""}</span>`;
     row.onmouseenter = () => {
       S.pick = i;
-      renderNext();
+      for (const [j, r] of [...box.children].entries()) r.classList.toggle("sel", j === i);
+      exploreArrows();
     };
     row.onclick = () => go(c);
     box.appendChild(row);
   });
+}
+
+// the arrows while exploring: the book's moves (or the games' when past
+// it), Stockfish's best, and the move under the mouse
+function exploreArrows() {
+  if (S.mode !== "explore") return;
+  const n = node(S.node);
+  const arrows = [];
+  const arrow = (uci, color, width, opacity) =>
+    arrows.push({ from: uci.slice(0, 2), to: uci.slice(2, 4), color, width, opacity });
+  if (!S.extra.length && n.children.length) {
+    const total = n.children.reduce((a, c) => a + node(c).size, 0);
+    // the main branches only, and the one picked: twenty arrows hide the board
+    n.children.forEach((c, i) => {
+      if (i < 5 || i === S.pick) {
+        arrow(node(c).uci, i === S.pick && !S.hover ? "hover" : "blue", 0.08 + 0.14 * (node(c).size / total),
+          i === S.pick ? 0.9 : 0.7);
+      }
+    });
+  } else if (S.an.fen === curFen() && S.an.exp && S.an.exp.moves) {
+    for (const m of S.an.exp.moves.slice(0, 3)) arrow(m.uci, "gray", 0.06 + 0.16 * m.share, 0.75);
+  }
+  const best = S.an.fen === curFen() && S.an.lines && S.an.lines[0];
+  if (best) arrow(best.uci, "engine", 0.13, 0.8);
+  if (S.hover) arrow(S.hover, "hover", 0.16, 0.9);
+  board.setArrows(arrows);
 }
 
 function firstNamed(id) {
@@ -821,11 +889,61 @@ function explore(id) {
   exploreInfo();
 }
 
+// the position past the book, after ◀/▶ or a click on its moves
+function showPosition(animate) {
+  const m = S.extra[S.extra.length - 1];
+  const n = node(S.node);
+  if (m) board.set(m.fen, { last: m.uci, animate: animate && m.uci, check: m.check });
+  else board.set(n.fen, { last: n.uci, check: n.check });
+  updateMovable();
+  renderMoves();
+  quest();
+  exploreInfo();
+}
+
+function playOff(m, animate) {
+  const before = curFen();
+  const back = S.opening.index[epd(m.fen)];
+  if (back !== undefined) {
+    // another move order, back into the book
+    go(back, { animate: false, sound: false });
+    playSound(before, m.fen);
+    toast(`Back in the book: ${node(back).label}`);
+    quest();
+    exploreInfo();
+    return;
+  }
+  S.extra.push(m);
+  S.redo = [];
+  playSound(before, m.fen);
+  showPosition(animate);
+}
+
+// a move from the explorer or the engine: the book's own when it is one
+async function playUci(uci) {
+  S.hover = null;
+  const n = node(S.node);
+  const book = !S.extra.length && n.children.map(node).find((c) => c.uci === uci);
+  if (book) {
+    go(book.id);
+    exploreInfo();
+    return;
+  }
+  const m = await api().move(curFen(), uci);
+  if (m) playOff(m, true);
+}
+
 function exploreInfo() {
   const n = node(S.node);
   renderNext();
-  if (!n.children.length) {
-    say(`<span class="name">${n.label}</span>: the end of this line.`, false);
+  showTabs();
+  refreshAnalysis();
+  if (S.extra.length) {
+    say(`<b>${S.extra.length}</b> move${S.extra.length === 1 ? "" : "s"} past the book. ` +
+      "What's played here and what the engine thinks is below.", false);
+  } else if (!n.children.length) {
+    say(`<span class="name">${n.label}</span>: the end of the book line. ` +
+      "Play on: the games and the engine go further.", false);
   } else if (n.children.length === 1) {
     say(`Book: <b>${node(n.children[0]).numbered}</b>`, false);
   } else {
@@ -856,6 +974,7 @@ function again() {
 
 function startLine(leaf, mode = null) {
   clearTimeout(S.timer);
+  clearTimeout(S.anTimer);
   S.timer = null;
   S.leaf = leaf;
   const c = card(leaf);
@@ -864,8 +983,10 @@ function startLine(leaf, mode = null) {
   S.tries = 0;
   board.orientation = S.color;
   S.node = 0;
+  S.extra = [];
   board.set(node(0).fen);
   renderNext();
+  showTabs();
   header();
   quest();
   say(S.mode === "learn"
@@ -939,7 +1060,7 @@ async function finish() {
   actions([
     ["▶ Next line <small>(n)</small>", nextLine, right],
     ["⟲ Again <small>(r)</small>", again, !right],
-    ["🔍 Explore <small>(e)</small>", () => explore(S.node)],
+    ["🔍 Explore on from here <small>(e)</small>", () => explore(S.node)],
   ]);
 }
 
@@ -947,16 +1068,13 @@ async function moved(from, to, clicked) {
   const n = node(S.node);
   const book = n.children.map(node).find((c) => c.uci.slice(0, 4) === from + to);
   if (S.mode === "explore") {
-    if (book) {
+    if (book && !S.extra.length) {
       go(book.id, { animate: clicked });
       exploreInfo();
       return;
     }
-    const m = await api().move(n.fen, from + to);
-    if (!m) return;
-    board.mark({ [to]: "wrong" });
-    sound.play("bad");
-    say(`<span class="bad">${m.san}</span> isn't a line of this opening. The blue arrows are.`);
+    const m = await api().move(curFen(), from + to);
+    if (m) playOff(m, clicked);
     return;
   }
   const nxt = expected();
@@ -1010,6 +1128,307 @@ function switchColor() {
   nextLine();
 }
 
+// ---------------------------------------------------------------- analysis
+
+// the tabs show while exploring; a line being trained keeps its tree
+function showTabs() {
+  const exploring = S.mode === "explore";
+  $("#tabs").classList.toggle("hidden", !exploring);
+  const tab = exploring ? S.tab : "tree";
+  $("#tab-analysis").classList.toggle("hidden", tab !== "analysis");
+  $("#tab-tree").classList.toggle("hidden", tab !== "tree");
+  for (const b of document.querySelectorAll("#tabs .tab")) b.classList.toggle("on", b.dataset.tab === tab);
+  $("#evalbar").classList.toggle("hidden", !exploring || !S.engineOn);
+  if (!exploring) clearTimeout(S.anTimer);
+}
+
+function setTab(tab) {
+  if (S.mode !== "explore") return;
+  S.tab = tab;
+  showTabs();
+}
+
+function toggleEngine() {
+  if (!S.opening || S.mode !== "explore") return;
+  S.engineOn = !S.engineOn;
+  $("#engine-btn").classList.toggle("on", S.engineOn);
+  S.an = { fen: null };
+  showTabs();
+  refreshAnalysis();
+  exploreArrows();
+}
+
+function setDb(db) {
+  if (!S.opening || S.mode !== "explore") return;
+  S.db = db;
+  for (const b of document.querySelectorAll("#an-tools [data-db]")) b.classList.toggle("on", b.dataset.db === db);
+  $("#ratings").classList.toggle("hidden", db !== "lichess");
+  S.an = { fen: null };
+  refreshAnalysis();
+}
+
+// Lichess' winning chances, [-1, 1], for a white-POV score
+function chances(cp) {
+  const c = Math.max(-1000, Math.min(1000, cp));
+  return 2 / (1 + Math.exp(-0.00368208 * c)) - 1;
+}
+
+function pov(cp, color) {
+  return color === "white" ? cp : -cp;
+}
+
+function scoreBadge(line) {
+  const neg = line.cp < 0 || (line.mate !== null && line.mate < 0);
+  return `<span class="score${neg ? " neg" : ""}">${line.text}</span>`;
+}
+
+function verdict(line) {
+  if (line.mate !== null) {
+    return line.mate > 0 ? `White mates in ${line.mate}` : `Black mates in ${-line.mate}`;
+  }
+  const cp = line.cp;
+  const who = cp > 0 ? "White" : "Black";
+  const a = Math.abs(cp);
+  if (a < 35) return "About equal";
+  if (a < 90) return `${who} is slightly better`;
+  if (a < 200) return `${who} is better`;
+  if (a < 500) return `${who} is much better`;
+  return `${who} is winning`;
+}
+
+function refreshAnalysis() {
+  clearTimeout(S.anTimer);
+  if (!S.opening || S.mode !== "explore") return;
+  const fen = curFen();
+  if (S.an.fen !== fen) S.an = { fen, exp: null, lines: null, judged: null, name: null, over: null };
+  renderAnalysis();
+  // a pause first: ← held down shouldn't ask Lichess for every position
+  S.anTimer = setTimeout(() => runAnalysis(fen), 200);
+}
+
+async function runAnalysis(fen) {
+  const A = S.an;
+  const here = () => S.mode === "explore" && S.an === A && curFen() === fen;
+  api().named(fen).then((n) => {
+    if (here()) {
+      A.name = n;
+      renderAnalysis();
+    }
+  });
+  const games = api().explorer(fen, S.db, S.ratings).then((d) => {
+    if (here()) {
+      A.exp = d;
+      renderAnalysis();
+    }
+    return d;
+  });
+  if (!S.engineOn) return;
+  let r = await api().analyse(fen, 0.4);
+  if (!r || !here()) return;
+  A.lines = r.lines;
+  A.over = r.over;
+  renderAnalysis();
+  const d = await games;
+  if (!here()) return;
+  if (d && d.moves && d.moves.length) {
+    // the engine's word on each move people play here, mistakes included
+    const j = await api().analyse(fen, 1.2, d.moves.slice(0, 8).map((m) => m.uci));
+    if (!j || !here()) return;
+    A.judged = Object.fromEntries(j.lines.map((l) => [l.uci, l]));
+    renderAnalysis();
+  }
+  r = await api().analyse(fen, 3);
+  if (!r || !here()) return;
+  A.lines = r.lines;
+  renderAnalysis();
+}
+
+function compact(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1e4) return `${Math.round(n / 1e3)}k`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+
+function pct(n, total) {
+  return total ? Math.round((100 * n) / total) : 0;
+}
+
+function wdb(m) {
+  const t = m.white + m.draws + m.black;
+  const w = pct(m.white, t);
+  const d = pct(m.draws, t);
+  const bl = t ? 100 - w - d : 0;
+  const label = (v) => (v >= 12 ? `${v}%` : "");
+  return `<span class="wdb" title="White wins ${w}%, draws ${d}%, Black wins ${bl}%">` +
+    `<i class="w" style="width:${w}%">${label(w)}</i><i class="d" style="width:${d}%">${label(d)}</i>` +
+    `<i class="b" style="width:${bl}%">${label(bl)}</i></span>`;
+}
+
+// the mover's score in practice: wins and half the draws
+function practice(m, color) {
+  const t = m.white + m.draws + m.black;
+  return t ? ((color === "white" ? m.white : m.black) + m.draws / 2) / t : 0;
+}
+
+// how much a move gives away next to the best one, for its mover
+function loss(line, best, color) {
+  return chances(pov(best.cp, color)) - chances(pov(line.cp, color));
+}
+
+function lossClass(l) {
+  if (l >= 0.3) return "blunder";
+  if (l >= 0.2) return "mistake";
+  if (l >= 0.1) return "inacc";
+  return "ok";
+}
+
+function mv(uci, san) {
+  return `<span class="mv" data-uci="${uci}">${san}</span>`;
+}
+
+function renderAnalysis() {
+  if (S.mode !== "explore") return;
+  const A = S.an;
+  const fen = curFen();
+  const mover = turnOf(fen);
+  const Mover = mover === "white" ? "White" : "Black";
+  const yours = mover === S.color;
+  const n = node(S.node);
+  const exp = A.exp && !A.exp.error ? A.exp : null;
+  const best = A.lines && A.lines[0];
+  const judged = A.judged || {};
+  const tips = [];
+
+  // where we are
+  const name = (exp && exp.opening && exp.opening.name) || (A.name && A.name.name);
+  if (S.extra.length) {
+    tips.push(["dim", `Past the book of ${S.opening.family}${name ? `, now in the <b>${name}</b>` : ""}.`]);
+  }
+  if (A.over) tips.push(["eval", `The game is over: ${A.over}.`]);
+  if (best) {
+    const after = best.reply ? `, ${best.reply} the answer` : "";
+    tips.push(["eval", `${scoreBadge(best)} <b>${verdict(best)}</b>. The engine plays ${mv(best.uci, best.san)}${after}.`]);
+  } else if (S.engineOn && !A.over) {
+    tips.push(["dim", "Stockfish is thinking…"]);
+  }
+  if (exp && exp.total) {
+    const where = S.db === "masters" ? "masters' games" : "Lichess games";
+    const w = pct(exp.white, exp.total);
+    const d = pct(exp.draws, exp.total);
+    tips.push(["dim", `${compact(exp.total)} ${where} from here: White wins ${w}%, ${d}% draws, ` +
+      `Black wins ${100 - w - d}%.`]);
+  }
+  if (exp && exp.moves.length) {
+    const top = exp.moves[0];
+    const engineTop = best && exp.moves.find((m) => m.uci === best.uci);
+    if (best && top.uci === best.uci) {
+      tips.push(["good", `The most played, ${mv(top.uci, top.san)} (${pct(top.games, exp.total)}%), is also the engine's choice.`]);
+    } else if (best) {
+      tips.push(["good", `Most played: ${mv(top.uci, top.san)} (${pct(top.games, exp.total)}%). ` +
+        `The engine prefers ${mv(best.uci, best.san)}${engineTop ? ` (${pct(engineTop.games, exp.total)}% play it)` : ", hardly ever played"}.`]);
+    }
+    // what scores best for the mover, among moves with enough games
+    const solid = exp.moves.filter((m) => m.games >= 100 && m.share >= 0.02);
+    const scorer = solid.length > 1 && solid.reduce((a, b) => (practice(b, mover) > practice(a, mover) ? b : a));
+    if (scorer && scorer.uci !== top.uci) {
+      tips.push(["good", `${mv(scorer.uci, scorer.san)} scores best in practice: ` +
+        `${Math.round(100 * practice(scorer, mover))}% for ${Mover} (${compact(scorer.games)} games).`]);
+    }
+    // traps: moves people play a lot that the engine refutes
+    if (best) {
+      for (const m of exp.moves) {
+        const j = judged[m.uci];
+        if (!j || m.share < 0.03 || m.games < 50) continue;
+        const l = loss(j, best, mover);
+        if (l < 0.2) continue;
+        const share = `${pct(m.games, exp.total)}%`;
+        if (yours) {
+          tips.push(["avoid", `⚠ Avoid ${mv(m.uci, m.san)}: ${share} of players go for it, ` +
+            `but ${j.reply ? `${j.reply} refutes it` : "it loses ground"} (${j.text}).`]);
+        } else {
+          tips.push(["trap", `🪤 A common mistake: ${mv(m.uci, m.san)}, played by ${share}. ` +
+            `${j.reply ? `Punish it with ${j.reply}` : "The engine punishes it"} (${j.text}).`]);
+        }
+      }
+    }
+  } else if (exp) {
+    tips.push(["dim", "No games from this position: you're on your own, with the engine."]);
+  }
+  if (A.exp && A.exp.error) tips.push(["avoid", A.exp.error]);
+
+  const ul = $("#insights");
+  ul.innerHTML = tips.map(([cls, html]) => `<li class="${cls}">${html}</li>`).join("");
+
+  // the engine's lines
+  const el = $("#engine-lines");
+  if (!S.engineOn) {
+    el.innerHTML = '<div class="xnote">Engine off (l)</div>';
+  } else if (A.lines && A.lines.length) {
+    el.innerHTML = `<div class="who">Stockfish · depth ${A.lines[0].depth || "?"}</div>` + A.lines.map((l) =>
+      `<div class="eline" data-uci="${l.uci}">${scoreBadge(l)}<span class="pv">${l.pv}</span></div>`).join("");
+  } else {
+    el.innerHTML = "";
+  }
+
+  // the moves played here
+  const box = $("#explorer");
+  if (!A.exp) {
+    box.innerHTML = '<div class="xnote">Loading the games…</div>';
+  } else if (!exp) {
+    box.innerHTML = "";
+  } else {
+    const bookMoves = S.extra.length ? new Map() : new Map(n.children.map((c) => [node(c).uci, node(c)]));
+    box.innerHTML = exp.moves.map((m) => {
+      const j = judged[m.uci];
+      const l = j && best ? loss(j, best, mover) : null;
+      const badges = [
+        bookMoves.has(m.uci) ? '<span class="badge" title="A line of this opening">📖</span>' : "",
+        best && best.uci === m.uci ? '<span class="badge" title="The engine\'s choice">★</span>' : "",
+        l !== null && l >= 0.2 && m.share >= 0.03 ? '<span class="badge" title="Played a lot, refuted by the engine">🪤</span>' : "",
+      ].join("");
+      const book = bookMoves.get(m.uci);
+      const title = book ? (book.name || node(firstNamed(book.id)).label) : "";
+      return `<div class="xrow${book ? " book" : ""}" data-uci="${m.uci}" title="${title}">` +
+        `<span class="san">${m.san}${badges}</span>` +
+        `<span class="num">${pct(m.games, exp.total)}%</span>` +
+        `<span class="num">${compact(m.games)}</span>` +
+        wdb(m) +
+        `<span class="ev ${l === null ? "" : lossClass(l)}">${j ? j.text : ""}</span></div>`;
+    }).join("") || '<div class="xnote">No games from here.</div>';
+  }
+
+  for (const e of document.querySelectorAll("#tab-analysis [data-uci]")) {
+    e.onclick = () => playUci(e.dataset.uci);
+    e.onmouseenter = () => {
+      S.hover = e.dataset.uci;
+      exploreArrows();
+    };
+    e.onmouseleave = () => {
+      S.hover = null;
+      exploreArrows();
+    };
+  }
+
+  // the bar: White's share from the bottom (from the top when flipped)
+  const bar = $("#evalbar");
+  bar.classList.toggle("flip", board.orientation === "black");
+  if (best) {
+    const white = 50 + 50 * chances(best.cp);
+    bar.querySelector("i").style.height = `${white}%`;
+    const label = bar.querySelector("span");
+    label.textContent = best.text.replace("+", "");
+    const whiteUp = best.cp >= 0;
+    // on the side of the one ahead, in a color that reads on it
+    label.className = whiteUp === (board.orientation === "white") ? "low" : "high";
+    label.style.color = whiteUp ? "#333" : "#ddd";
+  } else if (!S.engineOn || A.over) {
+    bar.querySelector("i").style.height = "50%";
+    bar.querySelector("span").textContent = "";
+  }
+  exploreArrows();
+}
+
 // ---------------------------------------------------------------- keys
 
 function nav(what) {
@@ -1018,11 +1437,21 @@ function nav(what) {
   if (what === "flip") {
     board.orientation = board.orientation === "white" ? "black" : "white";
     board.render();
+    if (S.mode === "explore") renderAnalysis();
     return;
   }
-  if (what === "back" && n.parent !== null) explore(n.parent);
+  if (what === "back" && S.mode === "explore" && S.extra.length) {
+    S.redo.push(S.extra.pop());
+    showPosition(false);
+  } else if (what === "back" && n.parent !== null) explore(n.parent);
   else if (what === "start") explore(S.opening.root);
-  else if (what === "forward" && n.children.length) {
+  else if (what === "forward" && S.mode === "explore" && S.redo.length) {
+    const m = S.redo.pop();
+    const before = curFen();
+    S.extra.push(m);
+    playSound(before, m.fen);
+    showPosition(true);
+  } else if (what === "forward" && !S.extra.length && n.children.length) {
     if (S.mode !== "explore") explore(S.node);
     go(n.children[S.pick] ?? n.children[0]);
     exploreInfo();
@@ -1058,13 +1487,13 @@ document.addEventListener("keydown", (e) => {
     Home: () => nav("start"),
     End: () => nav("end"),
     ArrowDown: () => {
-      if (S.mode === "explore" && n.children.length) {
+      if (S.mode === "explore" && !S.extra.length && n.children.length) {
         S.pick = (S.pick + 1) % n.children.length;
         renderNext();
       }
     },
     ArrowUp: () => {
-      if (S.mode === "explore" && n.children.length) {
+      if (S.mode === "explore" && !S.extra.length && n.children.length) {
         S.pick = (S.pick - 1 + n.children.length) % n.children.length;
         renderNext();
       }
@@ -1077,6 +1506,9 @@ document.addEventListener("keydown", (e) => {
     t: trainHere,
     e: () => explore(S.node),
     c: switchColor,
+    l: toggleEngine,
+    d: () => setDb(S.db === "lichess" ? "masters" : "lichess"),
+    v: () => setTab(S.tab === "analysis" ? "tree" : "analysis"),
   };
   if (keys[e.key]) {
     e.preventDefault();
@@ -1104,6 +1536,15 @@ window.addEventListener("pywebviewready", async () => {
     };
   }
   for (const b of document.querySelectorAll("#controls button")) b.onclick = () => nav(b.dataset.nav);
+  for (const b of document.querySelectorAll("#tabs .tab")) b.onclick = () => setTab(b.dataset.tab);
+  for (const b of document.querySelectorAll("#an-tools [data-db]")) b.onclick = () => setDb(b.dataset.db);
+  $("#engine-btn").onclick = toggleEngine;
+  $("#ratings").onchange = () => {
+    S.ratings = $("#ratings").value;
+    $("#ratings").blur();
+    S.an = { fen: null };
+    refreshAnalysis();
+  };
   window.addEventListener("resize", () => board.fen && board.render());
   $("#search").value = await api().initial();
   await showHome();

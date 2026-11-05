@@ -5,6 +5,7 @@
   chess-openings,
 }:
 let
+  inherit (pkgs) lib;
   src = ./..;
 in
 {
@@ -18,7 +19,10 @@ in
       {
         nativeBuildInputs = [ chix.python ];
         CHESS_OPENINGS = chess-openings;
-        CHESS_ENGINES = builtins.toFile "chess-engines.json" "{}";
+        # the window's analysis needs stockfish, alone: Maia's nets are big
+        CHESS_ENGINES = pkgs.writeText "chess-engines.json" (
+          builtins.toJSON { stockfish = lib.getExe pkgs.stockfish; }
+        );
         CHESS_USERS = "";
         GI_TYPELIB_PATH = chix.typelibs;
       }

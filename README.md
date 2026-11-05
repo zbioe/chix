@@ -6,7 +6,10 @@ Chess to learn and train, on Nix:
   (`chess-openings bishop`). You learn it line by line, and every variation
   is there. The board shows the move to play with an arrow. Then you play the
   same line from memory, and it comes back on the days spaced repetition
-  says. You can also walk the whole tree of variations.
+  says. You can also walk the whole tree of variations, and play on past
+  the book: Stockfish's lines and eval bar, the moves people play there
+  (Lichess or masters' games, with their results), and the traps (moves
+  played a lot that the engine refutes).
 - **chess**: a terminal app, with mouse support, that covers:
   - the openings;
   - your Lichess and chess.com games, reviewed as Lichess does (accuracy,

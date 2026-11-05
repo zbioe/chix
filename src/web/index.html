@@ -30,7 +30,10 @@
 
 <main id="study" class="view hidden">
   <section id="left">
-    <div id="board-wrap"><div id="board"></div></div>
+    <div id="board-row">
+      <div id="evalbar" class="hidden" title="Stockfish's evaluation"><i></i><span></span></div>
+      <div id="board-wrap"><div id="board"></div></div>
+    </div>
     <div id="controls">
       <button data-nav="start" title="Start (Home)">⏮</button>
       <button data-nav="back" title="Back (←)">◀</button>
@@ -41,6 +44,7 @@
     <div id="legend">
       <span><i class="sw arrow-green"></i>your move to play</span>
       <span><i class="sw arrow-blue"></i>book moves from here</span>
+      <span><i class="sw arrow-engine"></i>engine's best</span>
       <span><i class="sw last"></i>last move</span>
       <span><i class="sw wrong"></i>not this one</span>
     </div>
@@ -68,18 +72,48 @@
       <div id="moves"></div>
     </div>
 
-    <div id="next-box">
-      <div class="box-title">Book moves from here <span class="dim">(hover to see, click to play)</span></div>
-      <div id="next"></div>
+    <div id="tabs">
+      <button data-tab="analysis" class="tab on" title="Switch with v">Analysis</button>
+      <button data-tab="tree" class="tab" title="Switch with v">Variations</button>
     </div>
 
-    <div id="tree-box">
-      <div class="box-title">Every variation <span class="dim">(click a move to go there, ▶ to train that branch)</span></div>
-      <div id="tree"></div>
+    <div id="tab-analysis" class="tab-body">
+      <div id="an-tools">
+        <button id="engine-btn" class="chip on" title="Stockfish on/off (l)">⚙ Engine</button>
+        <span class="seg">
+          <button data-db="lichess" class="chip on" title="Lichess games (d)">Lichess</button>
+          <button data-db="masters" class="chip" title="Masters' games (d)">Masters</button>
+        </span>
+        <select id="ratings" title="The players' ratings, for Lichess games">
+          <option value="1600,1800,2000,2200,2500">1600+</option>
+          <option value="2000,2200,2500">2000+</option>
+          <option value="1000,1200,1400,1600,1800,2000,2200,2500">all</option>
+        </select>
+      </div>
+      <ul id="insights"></ul>
+      <div>
+        <div class="box-title xhead">
+          <span>move</span><span>played</span><span>games</span><span>white · draw · black</span><span>eval</span>
+        </div>
+        <div id="explorer"></div>
+      </div>
+      <div id="engine-lines"></div>
+    </div>
+
+    <div id="tab-tree" class="tab-body hidden">
+      <div id="next-box">
+        <div class="box-title">Book moves from here <span class="dim">(hover to see, click to play)</span></div>
+        <div id="next"></div>
+      </div>
+
+      <div id="tree-box">
+        <div class="box-title">Every variation <span class="dim">(click a move to go there, ▶ to train that branch)</span></div>
+        <div id="tree"></div>
+      </div>
     </div>
 
     <div id="keys" class="dim">
-      <b>←/→</b> moves · <b>↑/↓</b> pick a book move · <b>h</b> hint · <b>n</b> next line · <b>r</b> again · <b>e</b> explore · <b>f</b> flip · <b>c</b> other side · <b>Esc</b> openings
+      <b>←/→</b> moves · <b>↑/↓</b> pick a book move · <b>h</b> hint · <b>n</b> next line · <b>r</b> again · <b>e</b> explore · <b>l</b> engine · <b>d</b> games · <b>v</b> tab · <b>f</b> flip · <b>c</b> other side · <b>Esc</b> openings
     </div>
   </aside>
 </main>

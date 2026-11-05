@@ -30,7 +30,19 @@ assert api.move(chess.STARTING_FEN, "e2e4")["san"] == "e4"
 key = "white:Bishop's Opening:e2e4 e7e5 f1c4 d7d5"
 assert api.answer(key, True)["box"] == 1
 assert key in api.progress("Bishop's Opening")
-print(f"window api: {len(catalog)} openings")
+# a move order the book doesn't have still finds the position's name
+italian = chess.Board()
+for san in "Nf3 Nc6 e4 e5 Bc4".split():
+    italian.push_san(san)
+assert api.named(italian.fen())["name"].startswith("Italian Game"), api.named(italian.fen())
+after = api.move(italian.fen(), "f8c5")
+assert after["fen"].startswith("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2"), after
+best = api.analyse(italian.fen(), 0.1)["lines"]
+assert len(best) == 3 and best[0]["pv"], best
+judged = api.analyse(italian.fen(), 0.1, ["f8c5", "g8f6"])["lines"]
+assert {line["uci"] for line in judged} == {"f8c5", "g8f6"}, judged
+api.close()
+print(f"window api: {len(catalog)} openings, names and the engine")
 
 
 async def terminal():
